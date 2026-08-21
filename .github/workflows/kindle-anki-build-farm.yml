@@ -15,6 +15,7 @@ env:
   KOX_TAG: '2025.05'
   KOX_TRIPLE: arm-kindlehf-linux-gnueabihf
   RUST_TARGET: armv7-unknown-linux-gnueabihf
+  PROTOC: /usr/bin/protoc
 
 jobs:
   build:
@@ -35,6 +36,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl
+          command -v protoc
+          "$PROTOC" --version
 
       - name: Static and host C gates
         working-directory: kindle-anki-port
@@ -71,6 +74,7 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           set -euo pipefail
+          test -x "$PROTOC"
           cargo test -p anki --features rustls kap_port::tests --lib --no-fail-fast
           cargo build -p anki --features rustls --release
           nm -D target/release/libanki.so | grep ' kap_'
@@ -90,6 +94,7 @@ jobs:
           AR_armv7_unknown_linux_gnueabihf: arm-kindlehf-linux-gnueabihf-ar
         run: |
           set -euo pipefail
+          test -x "$PROTOC"
           cargo build --manifest-path /tmp/anki/Cargo.toml -p anki --features rustls --release --target "$RUST_TARGET"
           mkdir -p /tmp/kap-build
           cp "/tmp/anki/target/$RUST_TARGET/release/libanki.so" /tmp/kap-build/libanki-kindle.so
