@@ -31,11 +31,13 @@ jobs:
           cp -a kindle-anki-build/kindle-anki-port ./kindle-anki-port
           cat kindle-anki-build/overlay/audio.part-* | base64 --decode > kindle-anki-port/native/audio.c
           if compgen -G 'kindle-anki-build/overlay/port.part-*' >/dev/null; then
-            cat kindle-anki-build/overlay/port.part-* | base64 --decode > kindle-anki-port/core/src/port.rs
+            cat kindle-anki-build/overlay/port.part-* | base64 --decode | gzip -dc > kindle-anki-port/core/src/port.rs
           fi
           if compgen -G 'kindle-anki-build/overlay/app.part-*' >/dev/null; then
-            cat kindle-anki-build/overlay/app.part-* | base64 --decode > kindle-anki-port/native/app.c
+            cat kindle-anki-build/overlay/app.part-* | base64 --decode | gzip -dc > kindle-anki-port/native/app.c
           fi
+          test -s kindle-anki-port/core/src/port.rs
+          test -s kindle-anki-port/native/app.c
 
       - name: Install host dependencies
         run: |
