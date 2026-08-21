@@ -23,23 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore independent source archive
+      - name: Restore independent source archive and platform overlays
         run: |
           set -euo pipefail
           ./kindle-anki-build/restore-source.sh
           cp -a kindle-anki-build/kindle-anki-port ./kindle-anki-port
+          cat kindle-anki-build/overlay/audio.part-* | base64 --decode > kindle-anki-port/native/audio.c
+          cc -O2 -std=c99 -Wall -Wextra -Werror kindle-anki-port/native/audio.c -ldl -o /tmp/kap-audio-restore-check
 
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl libasound2-dev
-
-      - name: Fetch pinned miniaudio header
-        working-directory: kindle-anki-port
-        run: |
-          set -euo pipefail
-          commit=$(jq -r '.miniaudio.commit' third_party.lock.json)
-          curl -fL --retry 3 "https://raw.githubusercontent.com/mackron/miniaudio/${commit}/miniaudio.h" -o native/miniaudio.h
+          sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl
 
       - name: Static and host C gates
         working-directory: kindle-anki-port
@@ -53,7 +48,7 @@ jobs:
           sh -n scripts/launch.sh
           sh -n scripts/sync.sh
           cc -O2 -std=c99 -Wall -Wextra -Werror -Icore native/app.c -ldl -o /tmp/kap-app-host
-          cc -O2 -std=c99 -Wall -Wextra -Werror -Inative -DMA_NO_RUNTIME_LINKING -DMA_NO_NODE_GRAPH -DMA_NO_ENGINE -DMA_NO_RESOURCE_MANAGER native/audio.c -ldl -lpthread -lm -lasound -o /tmp/kap-audio-host
+          cc -O2 -std=c99 -Wall -Wextra -Werror native/audio.c -ldl -o /tmp/kap-audio-host
 
       - name: Fetch and inject exact official Anki source
         run: |
@@ -99,7 +94,7 @@ jobs:
           mkdir -p /tmp/kap-build
           cp "/tmp/anki/target/$RUST_TARGET/release/libanki.so" /tmp/kap-build/libanki-kindle.so
           arm-kindlehf-linux-gnueabihf-gcc -O2 -std=c99 -Wall -Wextra -Werror -DKAP_BUILD_COMMIT=\"$GITHUB_SHA\" -DKAP_ANKI_COMMIT=\"$ANKI_COMMIT\" -Ikindle-anki-port/core kindle-anki-port/native/app.c -ldl -o /tmp/kap-build/kap-app
-          arm-kindlehf-linux-gnueabihf-gcc -O2 -std=c99 -Wall -Wextra -Werror -Ikindle-anki-port/native -DMA_NO_RUNTIME_LINKING -DMA_NO_NODE_GRAPH -DMA_NO_ENGINE -DMA_NO_RESOURCE_MANAGER kindle-anki-port/native/audio.c -ldl -lpthread -lm -o /tmp/kap-build/kap-audio
+          arm-kindlehf-linux-gnueabihf-gcc -O2 -std=c99 -Wall -Wextra -Werror kindle-anki-port/native/audio.c -ldl -o /tmp/kap-build/kap-audio
           file /tmp/kap-build/*
           arm-kindlehf-linux-gnueabihf-nm -D /tmp/kap-build/libanki-kindle.so | grep ' kap_'
 
