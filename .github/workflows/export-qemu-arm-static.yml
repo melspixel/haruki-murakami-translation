@@ -1,0 +1,40 @@
+name: Export qemu-arm-static
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [kindle-anki-offline-bundle]
+    paths:
+      - '.github/workflows/export-qemu-arm-static.yml'
+  pull_request:
+    branches: [kindle-anki-build-farm]
+    paths:
+      - '.github/workflows/export-qemu-arm-static.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and audit qemu-user-static
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+          test -x /usr/bin/qemu-arm-static
+          file /usr/bin/qemu-arm-static
+          /usr/bin/qemu-arm-static --version | head -1
+          mkdir -p offline-qemu
+          cp /usr/bin/qemu-arm-static offline-qemu/
+          sha256sum offline-qemu/qemu-arm-static > offline-qemu/qemu-arm-static.sha256
+          ldd offline-qemu/qemu-arm-static || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-arm-static-ubuntu24
+          path: offline-qemu/
+          retention-days: 30
+          compression-level: 0
