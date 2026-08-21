@@ -1,0 +1,64 @@
+name: Kindle Anki compile diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [kindle-anki-build-farm]
+
+permissions:
+  contents: read
+
+env:
+  ANKI_COMMIT: e5a6fbe27fdd4d57d5f712191b4a753032e57853
+  PROTOC: /usr/bin/protoc
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore source
+        run: |
+          set -euo pipefail
+          ./kindle-anki-build/restore-source.sh
+          cp -a kindle-anki-build/kindle-anki-port ./kindle-anki-port
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang git python3 protobuf-compiler pkg-config cmake ninja-build perl
+      - name: Fetch and inject official Anki
+        run: |
+          set -euo pipefail
+          git init /tmp/anki
+          git -C /tmp/anki remote add origin https://github.com/ankitects/anki.git
+          git -C /tmp/anki fetch --depth 1 origin "$ANKI_COMMIT"
+          git -C /tmp/anki checkout --detach FETCH_HEAD
+          python3 kindle-anki-port/tools/inject_into_anki.py --project "$GITHUB_WORKSPACE/kindle-anki-port" --anki /tmp/anki
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+      - name: Capture semantic backend compile diagnostics
+        id: compile
+        continue-on-error: true
+        working-directory: /tmp/anki
+        shell: bash
+        run: |
+          set +e
+          CARGO_TERM_COLOR=never cargo check -p anki --features rustls > "$GITHUB_WORKSPACE/compile.log" 2>&1
+          status=$?
+          echo "$status" > "$GITHUB_WORKSPACE/compile.status"
+          tail -n 500 "$GITHUB_WORKSPACE/compile.log"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kindle-anki-compile-diagnostics
+          path: |
+            compile.log
+            compile.status
+          retention-days: 30
+      - name: Fail when compile failed
+        if: always()
+        run: |
+          test "$(cat compile.status)" = 0

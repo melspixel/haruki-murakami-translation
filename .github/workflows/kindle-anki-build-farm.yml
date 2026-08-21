@@ -1,0 +1,167 @@
+name: Kindle Anki build farm
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [kindle-anki-build-farm]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ANKI_COMMIT: e5a6fbe27fdd4d57d5f712191b4a753032e57853
+  KOX_TAG: '2025.05'
+  KOX_TRIPLE: arm-kindlehf-linux-gnueabihf
+  RUST_TARGET: armv7-unknown-linux-gnueabihf
+  PROTOC: /usr/bin/protoc
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore independent source archive and overlays
+        run: |
+          set -euo pipefail
+          ./kindle-anki-build/restore-source.sh
+          cp -a kindle-anki-build/kindle-anki-port ./kindle-anki-port
+          cat kindle-anki-build/overlay/audio.part-* | base64 --decode > kindle-anki-port/native/audio.c
+          if compgen -G 'kindle-anki-build/overlay/port.part-*' >/dev/null; then
+            cat kindle-anki-build/overlay/port.part-* | base64 --decode | gzip -dc > kindle-anki-port/core/src/port.rs
+          fi
+          if compgen -G 'kindle-anki-build/overlay/app.part-*' >/dev/null; then
+            cat kindle-anki-build/overlay/app.part-* | base64 --decode | gzip -dc > kindle-anki-port/native/app.c
+          fi
+          test -s kindle-anki-port/core/src/port.rs
+          test -s kindle-anki-port/native/app.c
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl
+          "$PROTOC" --version
+
+      - name: Static and host C gates
+        working-directory: kindle-anki-port
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/inject_into_anki.py
+          node --check web/bridge.js
+          node --check web/css_compat.js
+          node --check web/decks.js
+          node --check web/reviewer.js
+          sh -n scripts/launch.sh
+          sh -n scripts/sync.sh
+          cc -O2 -std=c99 -Wall -Wextra -Werror -Icore native/app.c -ldl -o /tmp/kap-app-host
+          cc -O2 -std=c99 -Wall -Wextra -Werror native/audio.c -ldl -o /tmp/kap-audio-host
+
+      - name: Fetch and inject exact official Anki source
+        run: |
+          set -euo pipefail
+          git init /tmp/anki
+          git -C /tmp/anki remote add origin https://github.com/ankitects/anki.git
+          git -C /tmp/anki fetch --depth 1 origin "$ANKI_COMMIT"
+          git -C /tmp/anki checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/anki rev-parse HEAD)" = "$ANKI_COMMIT"
+          python3 kindle-anki-port/tools/inject_into_anki.py --project "$GITHUB_WORKSPACE/kindle-anki-port" --anki /tmp/anki
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+          targets: armv7-unknown-linux-gnueabihf
+
+      - name: Compile and test semantic backend on host
+        id: host_backend
+        continue-on-error: true
+        working-directory: /tmp/anki
+        shell: bash
+        run: |
+          set +e
+          CARGO_TERM_COLOR=never cargo test -p anki --features rustls kap_port::tests --lib --no-fail-fast > "$GITHUB_WORKSPACE/cargo-host.log" 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            CARGO_TERM_COLOR=never cargo build -p anki --features rustls --release >> "$GITHUB_WORKSPACE/cargo-host.log" 2>&1
+            status=$?
+          fi
+          echo "$status" > "$GITHUB_WORKSPACE/cargo-host.status"
+          tail -n 500 "$GITHUB_WORKSPACE/cargo-host.log"
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Kindle-Anki-compile-diagnostics
+          path: |
+            cargo-host.log
+            cargo-host.status
+          retention-days: 30
+
+      - name: Verify host backend exports
+        if: steps.host_backend.outcome == 'success'
+        working-directory: /tmp/anki
+        run: nm -D target/release/libanki.so | grep ' kap_'
+
+      - name: Fetch Kindle hard-float toolchain
+        if: steps.host_backend.outcome == 'success'
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 "https://github.com/koreader/koxtoolchain/releases/download/${KOX_TAG}/kindlehf.tar.gz" -o /tmp/kindlehf.tar.gz
+          tar -xzf /tmp/kindlehf.tar.gz -C "$HOME"
+          echo "$HOME/x-tools/$KOX_TRIPLE/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-build ARMHF backend and frontend
+        if: steps.host_backend.outcome == 'success'
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-kindlehf-linux-gnueabihf-gcc
+          CC_armv7_unknown_linux_gnueabihf: arm-kindlehf-linux-gnueabihf-gcc
+          CXX_armv7_unknown_linux_gnueabihf: arm-kindlehf-linux-gnueabihf-g++
+          AR_armv7_unknown_linux_gnueabihf: arm-kindlehf-linux-gnueabihf-ar
+        run: |
+          set -euo pipefail
+          CARGO_TERM_COLOR=never cargo build --manifest-path /tmp/anki/Cargo.toml -p anki --features rustls --release --target "$RUST_TARGET" > cross-build.log 2>&1 || { tail -n 500 cross-build.log; exit 1; }
+          mkdir -p /tmp/kap-build
+          cp "/tmp/anki/target/$RUST_TARGET/release/libanki.so" /tmp/kap-build/libanki-kindle.so
+          arm-kindlehf-linux-gnueabihf-gcc -O2 -std=c99 -Wall -Wextra -Werror -DKAP_BUILD_COMMIT=\"$GITHUB_SHA\" -DKAP_ANKI_COMMIT=\"$ANKI_COMMIT\" -Ikindle-anki-port/core kindle-anki-port/native/app.c -ldl -o /tmp/kap-build/kap-app
+          arm-kindlehf-linux-gnueabihf-gcc -O2 -std=c99 -Wall -Wextra -Werror kindle-anki-port/native/audio.c -ldl -o /tmp/kap-build/kap-audio
+          file /tmp/kap-build/*
+          arm-kindlehf-linux-gnueabihf-nm -D /tmp/kap-build/libanki-kindle.so | grep ' kap_'
+          arm-kindlehf-linux-gnueabihf-readelf -V /tmp/kap-build/libanki-kindle.so | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -20 || true
+
+      - name: Assemble and audit installation archive
+        if: steps.host_backend.outcome == 'success'
+        run: |
+          set -euo pipefail
+          DIST="$RUNNER_TEMP/kap-dist"
+          EXT="$DIST/extensions/kindle-anki-port"
+          DOC="$DIST/documents"
+          mkdir -p "$EXT" "$DOC" release
+          cp /tmp/kap-build/kap-app /tmp/kap-build/kap-audio /tmp/kap-build/libanki-kindle.so "$EXT/"
+          cp -R kindle-anki-port/web kindle-anki-port/scripts "$EXT/"
+          cp kindle-anki-port/packaging/config.example.ini "$EXT/"
+          cp kindle-anki-port/packaging/documents/* "$DOC/"
+          cp kindle-anki-port/LICENSE kindle-anki-port/README.md "$EXT/"
+          chmod 755 "$EXT/kap-app" "$EXT/kap-audio" "$EXT/scripts/launch.sh" "$EXT/scripts/sync.sh" "$DOC"/*.sh
+          printf '{"product":"Kindle Anki Port","version":"0.1.0-port1","build_commit":"%s","anki_commit":"%s","target":"%s"}\n' "$GITHUB_SHA" "$ANKI_COMMIT" "$RUST_TARGET" > "$EXT/BUILD.json"
+          (cd "$EXT" && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256)
+          if find "$DIST" -type f | grep -Ei 'collection\.anki2|media\.db2|config\.ini$|\.pid$|\.log$'; then exit 1; fi
+          if grep -RIE 'ranki|rewrite-v1|LD_PRELOAD|COCA-English|4000 Essential' "$DIST"; then exit 1; fi
+          (cd "$DIST" && zip -qr "$GITHUB_WORKSPACE/release/Kindle-Anki-Port-PW6-armhf.zip" extensions documents)
+          (cd release && sha256sum Kindle-Anki-Port-PW6-armhf.zip > Kindle-Anki-Port-PW6-armhf.zip.sha256)
+          unzip -t release/Kindle-Anki-Port-PW6-armhf.zip
+          unzip -l release/Kindle-Anki-Port-PW6-armhf.zip | tee release/package-contents.txt
+          cp kindle-anki-port/docs/ARCHITECTURE.md kindle-anki-port/docs/PARITY_MATRIX.md kindle-anki-port/docs/RELEASE_GATES.md release/
+
+      - uses: actions/upload-artifact@v4
+        if: steps.host_backend.outcome == 'success'
+        with:
+          name: Kindle-Anki-Port-PW6-armhf
+          path: release/
+          retention-days: 90
+
+      - name: Fail when host backend failed
+        if: always()
+        run: test "$(cat cargo-host.status)" = 0
