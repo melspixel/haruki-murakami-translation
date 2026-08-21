@@ -32,7 +32,7 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl
+          sudo apt-get install -y build-essential clang curl file git jq nodejs python3 protobuf-compiler unzip zip pkg-config cmake ninja-build perl libasound2-dev
 
       - name: Fetch pinned miniaudio header
         working-directory: kindle-anki-port
@@ -53,7 +53,7 @@ jobs:
           sh -n scripts/launch.sh
           sh -n scripts/sync.sh
           cc -O2 -std=c99 -Wall -Wextra -Werror -Icore native/app.c -ldl -o /tmp/kap-app-host
-          cc -O2 -std=c99 -Wall -Wextra -Werror -Inative -DMA_NO_RUNTIME_LINKING -DMA_NO_NODE_GRAPH -DMA_NO_ENGINE -DMA_NO_RESOURCE_MANAGER native/audio.c -ldl -lpthread -lm -o /tmp/kap-audio-host
+          cc -O2 -std=c99 -Wall -Wextra -Werror -Inative -DMA_NO_RUNTIME_LINKING -DMA_NO_NODE_GRAPH -DMA_NO_ENGINE -DMA_NO_RESOURCE_MANAGER native/audio.c -ldl -lpthread -lm -lasound -o /tmp/kap-audio-host
 
       - name: Fetch and inject exact official Anki source
         run: |
