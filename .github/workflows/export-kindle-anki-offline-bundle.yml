@@ -6,6 +6,10 @@ on:
     branches: [kindle-anki-offline-bundle]
     paths:
       - '.github/workflows/export-kindle-anki-offline-bundle.yml'
+  pull_request:
+    branches: [kindle-anki-build-farm]
+    paths:
+      - '.github/workflows/export-kindle-anki-offline-bundle.yml'
 
 permissions:
   contents: read
