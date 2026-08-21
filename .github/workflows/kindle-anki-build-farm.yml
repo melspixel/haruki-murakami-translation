@@ -1,0 +1,23 @@
+name: Kindle Anki build farm probe
+
+on:
+  push:
+    branches: [kindle-anki-build-farm]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -eux
+          uname -a
+          cc --version
+          printf 'build farm ready\n' > probe.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kindle-anki-build-farm-probe
+          path: probe.txt
