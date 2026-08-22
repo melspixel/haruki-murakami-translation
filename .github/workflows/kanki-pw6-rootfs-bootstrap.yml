@@ -42,7 +42,8 @@ jobs:
           git clone --depth 1 --branch "$KINDLETOOL_TAG" \
             https://github.com/NiLuJe/KindleTool.git /tmp/KindleTool
           make -C /tmp/KindleTool -j"$(nproc)"
-          /tmp/KindleTool/KindleTool version | tee /tmp/kindletool-version.txt
+          /tmp/KindleTool/KindleTool/Release/kindletool version \
+            | tee /tmp/kindletool-version.txt
           git -C /tmp/KindleTool rev-parse HEAD | tee /tmp/kindletool-commit.txt
 
       - name: Download and verify official PW6 5.19.6 firmware
@@ -62,7 +63,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/pw6-extracted /tmp/rootfs-payload
           mkdir -p /tmp/pw6-extracted /tmp/rootfs-payload
-          /tmp/KindleTool/KindleTool extract \
+          /tmp/KindleTool/KindleTool/Release/kindletool extract \
             /tmp/pw6-5.19.6.bin /tmp/pw6-extracted
           rootfs_gz=$(find /tmp/pw6-extracted -type f -name rootfs.img.gz \
             -print -quit)
