@@ -1,0 +1,131 @@
+name: Kanki encrypted PW6 rootfs bootstrap
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/kanki-pw6-rootfs-bootstrap.yml
+      - .github/kanki-transport/public-cert.pem
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FIRMWARE_URL: https://s3.amazonaws.com/firmwaredownloads/update_kindle_all_new_paperwhite_12th_5.19.6.bin
+  FIRMWARE_SHA256: 72445ffe3142991535902922a69969b913d4b27c58af4ceda1a3dc5ffadd143c
+  FIRMWARE_MD5: 697aeb33c02f46b9b0911ab05c28b06d
+  ROOTFS_SHA256: b3dc1a4e9a73f103bb98537dfd4bfd16734296a8e10600292e1d1229b05c5cfa
+  KINDLETOOL_TAG: v1.6.6
+
+jobs:
+  encrypted-rootfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install extraction dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl e2fsprogs git libarchive-dev nettle-dev \
+            openssl zlib1g-dev zstd
+
+      - name: Build pinned KindleTool
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$KINDLETOOL_TAG" \
+            https://github.com/NiLuJe/KindleTool.git /tmp/KindleTool
+          make -C /tmp/KindleTool -j"$(nproc)"
+          /tmp/KindleTool/KindleTool/Release/kindletool version \
+            | tee /tmp/kindletool-version.txt
+          git -C /tmp/KindleTool rev-parse HEAD | tee /tmp/kindletool-commit.txt
+
+      - name: Download and verify official PW6 5.19.6 firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --connect-timeout 30 \
+            "$FIRMWARE_URL" -o /tmp/pw6-5.19.6.bin
+          printf '%s  %s\n' "$FIRMWARE_SHA256" /tmp/pw6-5.19.6.bin \
+            | sha256sum -c -
+          printf '%s  %s\n' "$FIRMWARE_MD5" /tmp/pw6-5.19.6.bin \
+            | md5sum -c -
+
+      - name: Extract and verify retained rootfs image
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pw6-extracted /tmp/rootfs-payload
+          mkdir -p /tmp/pw6-extracted /tmp/rootfs-payload
+          /tmp/KindleTool/KindleTool/Release/kindletool extract \
+            /tmp/pw6-5.19.6.bin /tmp/pw6-extracted
+          rootfs_gz=$(find /tmp/pw6-extracted -type f -name rootfs.img.gz \
+            -print -quit)
+          test -n "$rootfs_gz"
+          gzip -dc "$rootfs_gz" > /tmp/rootfs-payload/pw6-rootfs.img
+          printf '%s  %s\n' "$ROOTFS_SHA256" \
+            /tmp/rootfs-payload/pw6-rootfs.img | sha256sum -c -
+          debugfs -R 'stat /lib/ld-linux-armhf.so.3' \
+            /tmp/rootfs-payload/pw6-rootfs.img >/tmp/debugfs-loader.txt 2>&1
+          debugfs -R 'stat /usr/lib/libwebkitgtk-1.0.so.0.7.2' \
+            /tmp/rootfs-payload/pw6-rootfs.img >/tmp/debugfs-webkit.txt 2>&1
+          {
+            printf 'KAP_PW6_ENCRYPTED_INPUT_V1\n'
+            printf 'firmware_url=%s\n' "$FIRMWARE_URL"
+            printf 'firmware_sha256=%s\n' "$FIRMWARE_SHA256"
+            printf 'firmware_md5=%s\n' "$FIRMWARE_MD5"
+            printf 'rootfs_image_sha256=%s\n' "$ROOTFS_SHA256"
+            printf 'kindletool_tag=%s\n' "$KINDLETOOL_TAG"
+            printf 'kindletool_commit=%s\n' "$(cat /tmp/kindletool-commit.txt)"
+            printf 'certificate_sha256_fingerprint=%s\n' \
+              "$(openssl x509 -in .github/kanki-transport/public-cert.pem \
+                -noout -fingerprint -sha256 | cut -d= -f2)"
+          } > /tmp/rootfs-payload/TRANSPORT-PROVENANCE.txt
+          cp /tmp/kindletool-version.txt /tmp/rootfs-payload/
+          cp /tmp/debugfs-loader.txt /tmp/rootfs-payload/
+          cp /tmp/debugfs-webkit.txt /tmp/rootfs-payload/
+          (cd /tmp/rootfs-payload && sha256sum pw6-rootfs.img \
+            TRANSPORT-PROVENANCE.txt kindletool-version.txt \
+            debugfs-loader.txt debugfs-webkit.txt > SHA256SUMS)
+
+      - name: Compress then encrypt rootfs payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime='UTC 2026-08-22' --owner=0 --group=0 \
+            --numeric-owner -C /tmp/rootfs-payload -cf - . \
+            | zstd -19 -T0 -o /tmp/kanki-pw6-rootfs.tar.zst
+          openssl cms -encrypt -binary -aes-256-cbc -outform DER \
+            -in /tmp/kanki-pw6-rootfs.tar.zst \
+            -out /tmp/kanki-pw6-rootfs.tar.zst.cms \
+            .github/kanki-transport/public-cert.pem
+          openssl cms -cmsout -inform DER \
+            -in /tmp/kanki-pw6-rootfs.tar.zst.cms -out /dev/null
+          mkdir -p /tmp/encrypted-artifact
+          mv /tmp/kanki-pw6-rootfs.tar.zst.cms /tmp/encrypted-artifact/
+          {
+            printf 'KAP_PW6_CMS_ENVELOPE_V1\n'
+            printf 'content=enveloped-zstd-tar\n'
+            printf 'cipher=aes-256-cbc\n'
+            printf 'recipient_certificate_sha256_fingerprint=%s\n' \
+              "$(openssl x509 -in .github/kanki-transport/public-cert.pem \
+                -noout -fingerprint -sha256 | cut -d= -f2)"
+          } > /tmp/encrypted-artifact/TRANSPORT-ENVELOPE.txt
+          (cd /tmp/encrypted-artifact && sha256sum \
+            kanki-pw6-rootfs.tar.zst.cms TRANSPORT-ENVELOPE.txt > SHA256SUMS)
+          du -h /tmp/encrypted-artifact/*
+
+      - name: Upload encrypted rootfs payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanki-pw6-rootfs-encrypted-compact
+          path: /tmp/encrypted-artifact/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
