@@ -106,18 +106,25 @@ jobs:
             -out /tmp/kanki-pw6-rootfs.tar.zst.cms \
             .github/kanki-transport/public-cert.pem
           openssl cms -cmsout -inform DER \
-            -in /tmp/kanki-pw6-rootfs.tar.zst.cms -print \
-            >/tmp/cms-structure.txt
+            -in /tmp/kanki-pw6-rootfs.tar.zst.cms -out /dev/null
           mkdir -p /tmp/encrypted-artifact
           mv /tmp/kanki-pw6-rootfs.tar.zst.cms /tmp/encrypted-artifact/
-          cp /tmp/cms-structure.txt /tmp/encrypted-artifact/
-          (cd /tmp/encrypted-artifact && sha256sum * > SHA256SUMS)
+          {
+            printf 'KAP_PW6_CMS_ENVELOPE_V1\n'
+            printf 'content=enveloped-zstd-tar\n'
+            printf 'cipher=aes-256-cbc\n'
+            printf 'recipient_certificate_sha256_fingerprint=%s\n' \
+              "$(openssl x509 -in .github/kanki-transport/public-cert.pem \
+                -noout -fingerprint -sha256 | cut -d= -f2)"
+          } > /tmp/encrypted-artifact/TRANSPORT-ENVELOPE.txt
+          (cd /tmp/encrypted-artifact && sha256sum \
+            kanki-pw6-rootfs.tar.zst.cms TRANSPORT-ENVELOPE.txt > SHA256SUMS)
           du -h /tmp/encrypted-artifact/*
 
       - name: Upload encrypted rootfs payload
         uses: actions/upload-artifact@v4
         with:
-          name: kanki-pw6-rootfs-encrypted
+          name: kanki-pw6-rootfs-encrypted-compact
           path: /tmp/encrypted-artifact/
           if-no-files-found: error
           retention-days: 1
