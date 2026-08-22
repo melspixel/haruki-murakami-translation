@@ -1,0 +1,35 @@
+name: Kanki artifact transport smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/kanki-artifact-transport-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  transport-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Create deterministic transport probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'kanki-artifact-transport-ok\n' > transport-probe.txt
+          printf '01731fdac2b56631c56cbb5beb7d0bfd313ce3f966d90eedfd50e16d5318c792  transport-probe.txt\n' > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Upload transport probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanki-artifact-transport-probe
+          path: |
+            transport-probe.txt
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
