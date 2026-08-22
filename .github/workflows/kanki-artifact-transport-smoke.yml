@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           printf 'kanki-artifact-transport-ok\n' > transport-probe.txt
-          printf '01731fdac2b56631c56cbb5beb7d0bfd313ce3f966d90eedfd50e16d5318c792  transport-probe.txt\n' > SHA256SUMS
+          printf '413149364c6d9e1dae6f1a3b361c5be12489cc6360a9d3d7ed0c1d538a73a6a2  transport-probe.txt\n' > SHA256SUMS
           sha256sum -c SHA256SUMS
       - name: Upload transport probe
         uses: actions/upload-artifact@v4
